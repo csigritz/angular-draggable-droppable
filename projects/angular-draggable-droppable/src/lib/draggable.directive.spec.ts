@@ -1,10 +1,12 @@
-import { Component, ElementRef, ViewChild } from '@angular/core';
+import { Component, ElementRef, TemplateRef, ViewChild } from '@angular/core';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { expect } from 'chai';
 import * as sinon from 'sinon';
-import { triggerDomEvent } from './util';
-import { DragAndDropModule } from '../src/index';
-import { DraggableDirective, ValidateDrag } from '../src/draggable.directive';
+import { triggerDomEvent } from '../test-utils';
+import { DragAndDropModule } from 'angular-draggable-droppable';
+import { DraggableDirective, ValidateDrag } from './draggable.directive';
+import { DraggableScrollContainerDirective } from './draggable-scroll-container.directive';
+import { By } from '@angular/platform-browser';
 
 describe('draggable directive', () => {
   @Component({
@@ -20,18 +22,29 @@ describe('draggable directive', () => {
         [dragCursor]="dragCursor"
         [dragActiveClass]="dragActiveClass"
         [ghostElementAppendTo]="ghostElementAppendTo"
+        [ghostElementTemplate]="ghostElementTemplate"
         (dragPointerDown)="dragPointerDown($event)"
         (dragStart)="dragStart($event)"
+        (ghostElementCreated)="ghostElementCreated($event)"
         (dragging)="dragging($event)"
         (dragEnd)="dragEnd($event)">
         Drag me!
-      </div>`
+      </div>
+      <ng-template #ghostElementTemplateRef>
+        <span>{{ 1 + 1 }} test</span>
+      </ng-template>
+    `
   })
   class TestComponent {
-    @ViewChild(DraggableDirective) draggable: DraggableDirective;
-    @ViewChild('draggableElement') draggableElement: ElementRef<HTMLDivElement>;
+    @ViewChild(DraggableDirective)
+    draggable: DraggableDirective;
+    @ViewChild('draggableElement')
+    draggableElement: ElementRef<HTMLDivElement>;
+    @ViewChild('ghostElementTemplateRef')
+    ghostElementTemplateRef: TemplateRef<any>;
     dragPointerDown = sinon.spy();
     dragStart = sinon.spy();
+    ghostElementCreated = sinon.spy();
     dragging = sinon.spy();
     dragEnd = sinon.spy();
     dragAxis: any = { x: true, y: true };
@@ -42,12 +55,94 @@ describe('draggable directive', () => {
     dragCursor = 'move';
     dragActiveClass: string;
     ghostElementAppendTo: HTMLElement;
+    ghostElementTemplate: TemplateRef<any>;
+  }
+
+  @Component({
+    // tslint:disable-line max-classes-per-file
+    template: `
+      <div mwlDraggableScrollContainer>
+        <div
+          #draggableElement
+          mwlDraggable
+          [dragAxis]="{x: true, y: true}"
+          (dragPointerDown)="dragPointerDown($event)"
+          (dragStart)="dragStart($event)"
+          (ghostElementCreated)="ghostElementCreated($event)"
+          (dragging)="dragging($event)"
+          (dragEnd)="dragEnd($event)">
+          Drag me!
+        </div>
+      </div>
+    `,
+    styles: [
+      `
+        [mwlDraggableScrollContainer] {
+          height: 25px;
+          overflow: scroll;
+          position: fixed;
+          top: 0;
+          left: 0;
+        }
+        [mwlDraggable] {
+          position: relative;
+          width: 50px;
+          height: 50px;
+          z-index: 1;
+        }
+      `
+    ]
+  })
+  class ScrollTestComponent extends TestComponent {
+    @ViewChild(DraggableScrollContainerDirective)
+    scrollContainer: DraggableScrollContainerDirective;
+  }
+
+  @Component({
+    // tslint:disable-line max-classes-per-file
+    template: `
+      <div
+        mwlDraggable
+        [dragAxis]="{x: true, y: true}"
+        (dragPointerDown)="outerDrag($event)"
+        (dragStart)="outerDrag($event)"
+        (ghostElementCreated)="outerDrag($event)"
+        (dragging)="outerDrag($event)"
+        (dragEnd)="outerDrag($event)"
+      >
+        <button
+          #draggableElement
+          mwlDraggable
+          [dragAxis]="{x: true, y: true}"
+          (dragPointerDown)="dragPointerDown($event)"
+          (dragStart)="dragStart($event)"
+          (ghostElementCreated)="ghostElementCreated($event)"
+          (dragging)="dragging($event)"
+          (dragEnd)="dragEnd($event)"
+        >
+          Drag me as well
+        </button>
+      </div>
+    `,
+    styles: [
+      `
+        div[mwlDraggable] {
+          position: relative;
+          width: 50px;
+          height: 50px;
+          z-index: 1;
+        }
+      `
+    ]
+  })
+  class InnerDragTestComponent extends TestComponent {
+    outerDrag = sinon.spy();
   }
 
   beforeEach(() => {
     TestBed.configureTestingModule({
       imports: [DragAndDropModule],
-      declarations: [TestComponent]
+      declarations: [TestComponent, ScrollTestComponent, InnerDragTestComponent]
     });
   });
 
@@ -97,23 +192,23 @@ describe('draggable directive', () => {
     });
   });
 
-  it('should end the pointerUp observable when the component is destroyed', () => {
+  it('should end the pointerUp$ observable when the component is destroyed', () => {
     const complete = sinon.spy();
-    fixture.componentInstance.draggable.pointerUp.subscribe({ complete });
+    fixture.componentInstance.draggable.pointerUp$.subscribe({ complete });
     fixture.destroy();
     expect(complete).to.have.been.calledOnce;
   });
 
-  it('should end the pointerDown observable when the component is destroyed', () => {
+  it('should end the pointerDown$ observable when the component is destroyed', () => {
     const complete = sinon.spy();
-    fixture.componentInstance.draggable.pointerDown.subscribe({ complete });
+    fixture.componentInstance.draggable.pointerDown$.subscribe({ complete });
     fixture.destroy();
     expect(complete).to.have.been.calledOnce;
   });
 
-  it('should end the pointerMove observable when the component is destroyed', () => {
+  it('should end the pointerMove$ observable when the component is destroyed', () => {
     const complete = sinon.spy();
-    fixture.componentInstance.draggable.pointerMove.subscribe({ complete });
+    fixture.componentInstance.draggable.pointerMove$.subscribe({ complete });
     fixture.destroy();
     expect(complete).to.have.been.calledOnce;
   });
@@ -199,7 +294,7 @@ describe('draggable directive', () => {
       clientY: 18
     });
     expect(fixture.componentInstance.dragging).to.have.been.calledWith({
-      x: 0,
+      x: 10,
       y: 8
     });
     triggerDomEvent('mousemove', draggableElement, {
@@ -243,7 +338,7 @@ describe('draggable directive', () => {
     });
     expect(fixture.componentInstance.dragging).to.have.been.calledWith({
       x: 8,
-      y: 0
+      y: 10
     });
     triggerDomEvent('mousemove', draggableElement, {
       clientX: 20,
@@ -307,6 +402,8 @@ describe('draggable directive', () => {
     triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
     triggerDomEvent('mousemove', draggableElement, { clientX: 7, clientY: 10 });
     expect(fixture.componentInstance.dragStart).to.have.been.calledOnce;
+    expect(fixture.componentInstance.ghostElementCreated).not.to.have.been
+      .called;
     expect(fixture.componentInstance.dragging).to.have.been.calledWith({
       x: 2,
       y: 0
@@ -361,7 +458,7 @@ describe('draggable directive', () => {
       y: 10
     });
     triggerDomEvent('mousemove', draggableElement, {
-      clientX: 18,
+      clientX: 14,
       clientY: 18
     });
     expect(fixture.componentInstance.dragging).to.have.been.calledOnce;
@@ -440,9 +537,11 @@ describe('draggable directive', () => {
   it('should work with touch events', () => {
     const draggableElement =
       fixture.componentInstance.draggableElement.nativeElement;
-    triggerDomEvent('touchstart', draggableElement, {
-      touches: [{ clientX: 5, clientY: 10 }]
-    });
+    fixture.debugElement
+      .query(By.directive(DraggableDirective))
+      .triggerEventHandler('touchstart', {
+        touches: [{ clientX: 5, clientY: 10 }]
+      });
     triggerDomEvent('touchmove', draggableElement, {
       targetTouches: [{ clientX: 7, clientY: 10 }]
     });
@@ -557,7 +656,7 @@ describe('draggable directive', () => {
     expect(fixture.componentInstance.dragEnd).not.to.have.been.called;
   });
 
-  it('should call the drag start, dragging and end events in order', () => {
+  it('should call the drag lifecycle events in order', () => {
     const draggableElement =
       fixture.componentInstance.draggableElement.nativeElement;
     triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
@@ -566,6 +665,7 @@ describe('draggable directive', () => {
     sinon.assert.callOrder(
       fixture.componentInstance.dragPointerDown,
       fixture.componentInstance.dragStart,
+      fixture.componentInstance.ghostElementCreated,
       fixture.componentInstance.dragging,
       fixture.componentInstance.dragEnd
     );
@@ -676,5 +776,109 @@ describe('draggable directive', () => {
       dragCancelled: true
     });
     expect(draggableElement.nextSibling).to.not.equal(ghostElement);
+  });
+
+  it('should trigger the drag end event when the component is destroyed', () => {
+    const draggableElement =
+      fixture.componentInstance.draggableElement.nativeElement;
+    triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
+    triggerDomEvent('mousemove', draggableElement, { clientX: 7, clientY: 10 });
+    expect(getComputedStyle(document.body.children[0]).userSelect).to.equal(
+      'none'
+    );
+    triggerDomEvent('mousemove', draggableElement, { clientX: 7, clientY: 8 });
+    fixture.destroy();
+    expect(fixture.componentInstance.dragEnd).to.have.been.calledWith({
+      x: 2,
+      y: -2,
+      dragCancelled: false
+    });
+    expect(getComputedStyle(document.body.children[0]).userSelect).to.equal(
+      'auto'
+    );
+  });
+
+  it('should use the contents of the ghost element template as the inner html of the ghost element', () => {
+    fixture.componentInstance.ghostElementTemplate =
+      fixture.componentInstance.ghostElementTemplateRef;
+    fixture.detectChanges();
+    const draggableElement =
+      fixture.componentInstance.draggableElement.nativeElement;
+    triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
+    triggerDomEvent('mousemove', draggableElement, { clientX: 7, clientY: 10 });
+    fixture.detectChanges();
+    const ghostElement = draggableElement.nextSibling as HTMLElement;
+    expect(ghostElement.innerHTML).to.equal('<span>2 test</span>');
+  });
+
+  it('should handle the parent element being scrolled while dragging', () => {
+    const scrollFixture = TestBed.createComponent(ScrollTestComponent);
+    scrollFixture.detectChanges();
+    document.body.appendChild(scrollFixture.nativeElement);
+    const draggableElement =
+      scrollFixture.componentInstance.draggableElement.nativeElement;
+    triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
+    expect(
+      scrollFixture.componentInstance.dragPointerDown
+    ).to.have.been.calledWith({
+      x: 0,
+      y: 0
+    });
+    triggerDomEvent('mousemove', draggableElement, { clientX: 5, clientY: 12 });
+    expect(scrollFixture.componentInstance.dragStart).to.have.been.calledOnce;
+    expect(scrollFixture.componentInstance.dragging).to.have.been.calledWith({
+      x: 0,
+      y: 2
+    });
+    const ghostElement = draggableElement.nextSibling as HTMLElement;
+    expect(ghostElement.style.transform).to.equal('translate(0px, 2px)');
+    scrollFixture.componentInstance.scrollContainer.elementRef.nativeElement.scrollTop = 5;
+    scrollFixture.debugElement
+      .query(By.directive(DraggableScrollContainerDirective))
+      .triggerEventHandler('scroll', {});
+    triggerDomEvent('mousemove', draggableElement, { clientX: 5, clientY: 14 });
+    expect(scrollFixture.componentInstance.dragging).to.have.been.calledWith({
+      x: 0,
+      y: 9
+    });
+    expect(ghostElement.style.transform).to.equal('translate(0px, 4px)');
+    triggerDomEvent('mouseup', draggableElement, { clientX: 5, clientY: 14 });
+    expect(scrollFixture.componentInstance.dragEnd).to.have.been.calledWith({
+      x: 0,
+      y: 9,
+      dragCancelled: false
+    });
+  });
+
+  it('should allow elements to be selected if clicking but not dragging the element', () => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = 'foo';
+    document.body.appendChild(tmp);
+    expect(getComputedStyle(tmp).userSelect).to.equal('auto');
+    const draggableElement =
+      fixture.componentInstance.draggableElement.nativeElement;
+    triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
+    expect(getComputedStyle(tmp).userSelect).to.equal('none');
+    triggerDomEvent('mouseup', draggableElement, { clientX: 5, clientY: 10 });
+    expect(getComputedStyle(tmp).userSelect).to.equal('auto');
+  });
+
+  it('should allow for draggable elements to be inside other draggable elements', () => {
+    const innerDragFixture = TestBed.createComponent(InnerDragTestComponent);
+    innerDragFixture.detectChanges();
+    document.body.appendChild(innerDragFixture.nativeElement);
+    const draggableElement =
+      innerDragFixture.componentInstance.draggableElement.nativeElement;
+    triggerDomEvent('mousedown', draggableElement, { clientX: 5, clientY: 10 });
+    expect(innerDragFixture.componentInstance.dragPointerDown).to.have.been
+      .calledOnce;
+    triggerDomEvent('mousemove', draggableElement, { clientX: 5, clientY: 12 });
+    expect(innerDragFixture.componentInstance.dragStart).to.have.been
+      .calledOnce;
+    expect(innerDragFixture.componentInstance.dragging).to.have.been.calledOnce;
+    triggerDomEvent('mouseup', draggableElement, { clientX: 5, clientY: 14 });
+    expect(innerDragFixture.componentInstance.dragEnd).to.have.been.calledOnce;
+    expect(innerDragFixture.componentInstance.outerDrag).not.to.have.been
+      .called;
   });
 });

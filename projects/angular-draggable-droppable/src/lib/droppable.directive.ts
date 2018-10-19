@@ -7,11 +7,13 @@ import {
   EventEmitter,
   NgZone,
   Input,
-  Renderer2
+  Renderer2,
+  Optional
 } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { distinctUntilChanged, pairwise, filter, map } from 'rxjs/operators';
 import { DraggableHelper } from './draggable-helper.provider';
+import { DraggableScrollContainerDirective } from './draggable-scroll-container.directive';
 
 function isCoordinateWithinRectangle(
   clientX: number,
@@ -26,8 +28,8 @@ function isCoordinateWithinRectangle(
   );
 }
 
-export interface DropData {
-  dropData: any;
+export interface DropEvent<T = any> {
+  dropData: T;
 }
 
 @Directive({
@@ -37,32 +39,38 @@ export class DroppableDirective implements OnInit, OnDestroy {
   /**
    * Added to the element when an element is dragged over it
    */
-  @Input() dragOverClass: string;
+  @Input()
+  dragOverClass: string;
 
   /**
    * Added to the element any time a draggable element is being dragged
    */
-  @Input() dragActiveClass: string;
+  @Input()
+  dragActiveClass: string;
 
   /**
    * Called when a draggable element starts overlapping the element
    */
-  @Output() dragEnter = new EventEmitter<DropData>();
+  @Output()
+  dragEnter = new EventEmitter<DropEvent>();
 
   /**
    * Called when a draggable element stops overlapping the element
    */
-  @Output() dragLeave = new EventEmitter<DropData>();
+  @Output()
+  dragLeave = new EventEmitter<DropEvent>();
 
   /**
    * Called when a draggable element is moved over the element
    */
-  @Output() dragOver = new EventEmitter<DropData>();
+  @Output()
+  dragOver = new EventEmitter<DropEvent>();
 
   /**
    * Called when a draggable element is dropped on this element
    */
-  @Output() drop = new EventEmitter<DropData>();
+  @Output()
+  drop = new EventEmitter<DropEvent>(); // tslint:disable-line no-output-named-after-standard-event
 
   currentDragSubscription: Subscription;
 
@@ -70,7 +78,8 @@ export class DroppableDirective implements OnInit, OnDestroy {
     private element: ElementRef<HTMLElement>,
     private draggableHelper: DraggableHelper,
     private zone: NgZone,
-    private renderer: Renderer2
+    private renderer: Renderer2,
+    @Optional() private scrollContainer: DraggableScrollContainerDirective
   ) {}
 
   ngOnInit() {
@@ -80,14 +89,21 @@ export class DroppableDirective implements OnInit, OnDestroy {
           this.element.nativeElement,
           this.dragActiveClass
         );
-        let droppableRectangle = this.element.nativeElement.getBoundingClientRect();
+        const droppableElement: {
+          rect?: ClientRect;
+          updateCache: boolean;
+          scrollContainerRect?: ClientRect;
+        } = {
+          updateCache: true
+        };
 
-        /* istanbul ignore next */
         const deregisterScrollListener = this.renderer.listen(
-          'window',
+          this.scrollContainer
+            ? this.scrollContainer.elementRef.nativeElement
+            : 'window',
           'scroll',
           () => {
-            droppableRectangle = this.element.nativeElement.getBoundingClientRect();
+            droppableElement.updateCache = true;
           }
         );
 
@@ -95,11 +111,30 @@ export class DroppableDirective implements OnInit, OnDestroy {
         const overlaps$ = drag$.pipe(
           map(({ clientX, clientY, dropData }) => {
             currentDragDropData = dropData;
-            return isCoordinateWithinRectangle(
+            if (droppableElement.updateCache) {
+              droppableElement.rect = this.element.nativeElement.getBoundingClientRect();
+              if (this.scrollContainer) {
+                droppableElement.scrollContainerRect = this.scrollContainer.elementRef.nativeElement.getBoundingClientRect();
+              }
+              droppableElement.updateCache = false;
+            }
+            const isWithinElement = isCoordinateWithinRectangle(
               clientX,
               clientY,
-              droppableRectangle
+              droppableElement.rect as ClientRect
             );
+            if (droppableElement.scrollContainerRect) {
+              return (
+                isWithinElement &&
+                isCoordinateWithinRectangle(
+                  clientX,
+                  clientY,
+                  droppableElement.scrollContainerRect as ClientRect
+                )
+              );
+            } else {
+              return isWithinElement;
+            }
           })
         );
 

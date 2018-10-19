@@ -10,9 +10,12 @@ import {
   OnChanges,
   NgZone,
   SimpleChanges,
-  Inject
+  Inject,
+  TemplateRef,
+  ViewContainerRef,
+  Optional
 } from '@angular/core';
-import { Subject, Observable, merge, ReplaySubject } from 'rxjs';
+import { Subject, Observable, merge, ReplaySubject, combineLatest } from 'rxjs';
 import {
   map,
   mergeMap,
@@ -22,10 +25,12 @@ import {
   pairwise,
   share,
   filter,
-  count
+  count,
+  startWith
 } from 'rxjs/operators';
 import { CurrentDragData, DraggableHelper } from './draggable-helper.provider';
 import { DOCUMENT } from '@angular/common';
+import { DraggableScrollContainerDirective } from './draggable-scroll-container.directive';
 
 export interface Coordinates {
   x: number;
@@ -42,11 +47,15 @@ export interface SnapGrid {
   y?: number;
 }
 
-export interface DragStart {
+export interface DragPointerDownEvent extends Coordinates {}
+
+export interface DragStartEvent {
   cancelDrag$: ReplaySubject<void>;
 }
 
-export interface DragEnd extends Coordinates {
+export interface DragMoveEvent extends Coordinates {}
+
+export interface DragEndEvent extends Coordinates {
   dragCancelled: boolean;
 }
 
@@ -58,8 +67,6 @@ export interface PointerEvent {
   event: MouseEvent | TouchEvent;
 }
 
-const MOVE_CURSOR: string = 'move';
-
 @Directive({
   selector: '[mwlDraggable]'
 })
@@ -67,22 +74,32 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
   /**
    * an object of data you can pass to the drop event
    */
-  @Input() dropData: any;
+  @Input()
+  dropData: any;
 
   /**
    * The axis along which the element is draggable
    */
-  @Input() dragAxis: DragAxis = { x: true, y: true };
+  @Input()
+  dragAxis: DragAxis = { x: true, y: true };
 
   /**
    * Snap all drags to an x / y grid
    */
-  @Input() dragSnapGrid: SnapGrid = {};
+  @Input()
+  dragSnapGrid: SnapGrid = {};
 
   /**
    * Show a ghost element that shows the drag when dragging
    */
-  @Input() ghostDragEnabled: boolean = true;
+  @Input()
+  ghostDragEnabled: boolean = true;
+
+  /**
+   * Show the original element when ghostDragEnabled is true
+   */
+  @Input()
+  showOriginalElementWhileDragging: boolean = false;
 
   /**
    * Show the original element when ghostDragEnabled is true
@@ -92,59 +109,79 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
   /**
    * Allow custom behaviour to control when the element is dragged
    */
-  @Input() validateDrag: ValidateDrag;
+  @Input()
+  validateDrag: ValidateDrag;
 
   /**
    * The cursor to use when dragging the element
    */
-  @Input() dragCursor = MOVE_CURSOR;
+  @Input()
+  dragCursor: string = '';
 
   /**
    * The css class to apply when the element is being dragged
    */
-  @Input() dragActiveClass: string;
+  @Input()
+  dragActiveClass: string;
 
   /**
    * The element the ghost element will be appended to. Default is next to the dragged element
    */
-  @Input() ghostElementAppendTo: HTMLElement;
+  @Input()
+  ghostElementAppendTo: HTMLElement;
+
+  /**
+   * An ng-template to be inserted into the parent element of the ghost element. It will overwrite any child nodes.
+   */
+  @Input()
+  ghostElementTemplate: TemplateRef<any>;
 
   /**
    * Called when the element can be dragged along one axis and has the mouse or pointer device pressed on it
    */
-  @Output() dragPointerDown = new EventEmitter<Coordinates>();
+  @Output()
+  dragPointerDown = new EventEmitter<DragPointerDownEvent>();
 
   /**
    * Called when the element has started to be dragged.
    * Only called after at least one mouse or touch move event.
    * If you call $event.cancelDrag$.emit() it will cancel the current drag
    */
-  @Output() dragStart = new EventEmitter<DragStart>();
+  @Output()
+  dragStart = new EventEmitter<DragStartEvent>();
+
+  /**
+   * Called after the ghost element has been created
+   */
+  @Output()
+  ghostElementCreated = new EventEmitter();
 
   /**
    * Called when the element is being dragged
    */
-  @Output() dragging = new EventEmitter<Coordinates>();
+  @Output()
+  dragging = new EventEmitter<DragMoveEvent>();
 
   /**
    * Called after the element is dragged
    */
-  @Output() dragEnd = new EventEmitter<DragEnd>();
+  @Output()
+  dragEnd = new EventEmitter<DragEndEvent>();
 
   /**
    * @hidden
    */
-  pointerDown: Subject<PointerEvent> = new Subject();
+  pointerDown$ = new Subject<PointerEvent>();
 
   /**
    * @hidden
    */
-  pointerMove: Subject<PointerEvent> = new Subject();
+  pointerMove$ = new Subject<PointerEvent>();
 
   /**
    * @hidden
    */
-  pointerUp: Subject<PointerEvent> = new Subject();
+  pointerUp$ = new Subject<PointerEvent>();
 
   private eventListenerSubscriptions: {
     mousemove?: () => void;
@@ -160,6 +197,8 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
 
   private ghostElement: HTMLElement | null;
 
+  private destroy$ = new Subject();
+
   /**
    * @hidden
    */
@@ -168,15 +207,23 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
     private renderer: Renderer2,
     private draggableHelper: DraggableHelper,
     private zone: NgZone,
+    private vcr: ViewContainerRef,
+    @Optional() private scrollContainer: DraggableScrollContainerDirective,
     @Inject(DOCUMENT) private document: any
   ) {}
 
   ngOnInit(): void {
     this.checkEventListeners();
 
-    const pointerDragged$: Observable<any> = this.pointerDown.pipe(
+    const pointerDragged$: Observable<any> = this.pointerDown$.pipe(
       filter(() => this.canDrag()),
       mergeMap((pointerDownEvent: PointerEvent) => {
+        // fix for https://github.com/mattlewis92/angular-draggable-droppable/issues/61
+        // stop mouse events propagating up the chain
+        if (pointerDownEvent.event.stopPropagation) {
+          pointerDownEvent.event.stopPropagation();
+        }
+
         // hack to prevent text getting selected in safari while dragging
         const globalDragStyle: HTMLStyleElement = this.renderer.createElement(
           'style'
@@ -195,6 +242,20 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
         );
         this.document.head.appendChild(globalDragStyle);
 
+        const startScrollPosition = this.getScrollPosition();
+
+        const scrollContainerScroll$ = new Observable(observer => {
+          const scrollContainer = this.scrollContainer
+            ? this.scrollContainer.elementRef.nativeElement
+            : 'window';
+          return this.renderer.listen(scrollContainer, 'scroll', e =>
+            observer.next(e)
+          );
+        }).pipe(
+          startWith(startScrollPosition),
+          map(() => this.getScrollPosition())
+        );
+
         const currentDrag$ = new Subject<CurrentDragData>();
         const cancelDrag$ = new ReplaySubject<void>();
 
@@ -202,26 +263,38 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
           this.dragPointerDown.next({ x: 0, y: 0 });
         });
 
-        const pointerMove = this.pointerMove.pipe(
-          map((pointerMoveEvent: PointerEvent) => {
+        const dragComplete$ = merge(
+          this.pointerUp$,
+          this.pointerDown$,
+          cancelDrag$,
+          this.destroy$
+        ).pipe(share());
+
+        const pointerMove = combineLatest<
+          PointerEvent,
+          { top: number; left: number }
+        >(this.pointerMove$, scrollContainerScroll$).pipe(
+          map(([pointerMoveEvent, scroll]) => {
             return {
               currentDrag$,
-              x: pointerMoveEvent.clientX - pointerDownEvent.clientX,
-              y: pointerMoveEvent.clientY - pointerDownEvent.clientY,
+              transformX: pointerMoveEvent.clientX - pointerDownEvent.clientX,
+              transformY: pointerMoveEvent.clientY - pointerDownEvent.clientY,
               clientX: pointerMoveEvent.clientX,
-              clientY: pointerMoveEvent.clientY
+              clientY: pointerMoveEvent.clientY,
+              scrollLeft: scroll.left,
+              scrollTop: scroll.top
             };
           }),
           map(moveData => {
             if (this.dragSnapGrid.x) {
-              moveData.x =
-                Math.floor(moveData.x / this.dragSnapGrid.x) *
+              moveData.transformX =
+                Math.round(moveData.transformX / this.dragSnapGrid.x) *
                 this.dragSnapGrid.x;
             }
 
             if (this.dragSnapGrid.y) {
-              moveData.y =
-                Math.floor(moveData.y / this.dragSnapGrid.y) *
+              moveData.transformY =
+                Math.round(moveData.transformY / this.dragSnapGrid.y) *
                 this.dragSnapGrid.y;
             }
 
@@ -229,19 +302,28 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
           }),
           map(moveData => {
             if (!this.dragAxis.x) {
-              moveData.x = 0;
+              moveData.transformX = 0;
             }
 
             if (!this.dragAxis.y) {
-              moveData.y = 0;
+              moveData.transformY = 0;
             }
 
             return moveData;
           }),
+          map(moveData => {
+            const scrollX = moveData.scrollLeft - startScrollPosition.left;
+            const scrollY = moveData.scrollTop - startScrollPosition.top;
+            return {
+              ...moveData,
+              x: moveData.transformX + scrollX,
+              y: moveData.transformY + scrollY
+            };
+          }),
           filter(
             ({ x, y }) => !this.validateDrag || this.validateDrag({ x, y })
           ),
-          takeUntil(merge(this.pointerUp, this.pointerDown, cancelDrag$)),
+          takeUntil(dragComplete$),
           share()
         );
 
@@ -298,6 +380,25 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
               margin: '0'
             });
 
+            if (this.ghostElementTemplate) {
+              const viewRef = this.vcr.createEmbeddedView(
+                this.ghostElementTemplate
+              );
+              clone.innerHTML = '';
+              viewRef.rootNodes
+                .filter(node => node instanceof Node)
+                .forEach(node => {
+                  clone.appendChild(node);
+                });
+              dragEnded$.subscribe(() => {
+                this.vcr.remove(this.vcr.indexOf(viewRef));
+              });
+            }
+
+            this.zone.run(() => {
+              this.ghostElementCreated.emit();
+            });
+
             dragEnded$.subscribe(() => {
               clone.parentElement!.removeChild(clone);
               this.ghostElement = null;
@@ -328,8 +429,6 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
             })
           )
           .subscribe(({ x, y, dragCancelled }) => {
-            this.document.head.removeChild(globalDragStyle);
-            currentDrag$.complete();
             this.zone.run(() => {
               this.dragEnd.next({ x, y, dragCancelled });
             });
@@ -337,6 +436,13 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
               this.element.nativeElement,
               this.dragActiveClass
             );
+            currentDrag$.complete();
+          });
+
+        merge(dragComplete$, dragEnded$)
+          .pipe(take(1))
+          .subscribe(() => {
+            this.document.head.removeChild(globalDragStyle);
           });
 
         return pointerMove;
@@ -360,26 +466,28 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
         }),
         map(([previous, next]) => next)
       )
-      .subscribe(({ x, y, currentDrag$, clientX, clientY }) => {
-        this.zone.run(() => {
-          this.dragging.next({ x, y });
-        });
-        if (this.ghostElement) {
-          const transform = `translate(${x}px, ${y}px)`;
-          this.setElementStyles(this.ghostElement, {
-            transform,
-            '-webkit-transform': transform,
-            '-ms-transform': transform,
-            '-moz-transform': transform,
-            '-o-transform': transform
+      .subscribe(
+        ({ x, y, currentDrag$, clientX, clientY, transformX, transformY }) => {
+          this.zone.run(() => {
+            this.dragging.next({ x, y });
+          });
+          if (this.ghostElement) {
+            const transform = `translate(${transformX}px, ${transformY}px)`;
+            this.setElementStyles(this.ghostElement, {
+              transform,
+              '-webkit-transform': transform,
+              '-ms-transform': transform,
+              '-moz-transform': transform,
+              '-o-transform': transform
+            });
+          }
+          currentDrag$.next({
+            clientX,
+            clientY,
+            dropData: this.dropData
           });
         }
-        currentDrag$.next({
-          clientX,
-          clientY,
-          dropData: this.dropData
-        });
-      });
+      );
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -390,9 +498,10 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
 
   ngOnDestroy(): void {
     this.unsubscribeEventListeners();
-    this.pointerDown.complete();
-    this.pointerMove.complete();
-    this.pointerUp.complete();
+    this.pointerDown$.complete();
+    this.pointerMove$.complete();
+    this.pointerUp$.complete();
+    this.destroy$.next();
   }
 
   private checkEventListeners(): void {
@@ -469,7 +578,7 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
         'document',
         'mousemove',
         (mouseMoveEvent: MouseEvent) => {
-          this.pointerMove.next({
+          this.pointerMove$.next({
             event: mouseMoveEvent,
             clientX: mouseMoveEvent.clientX,
             clientY: mouseMoveEvent.clientY
@@ -477,7 +586,7 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
         }
       );
     }
-    this.pointerDown.next({
+    this.pointerDown$.next({
       event,
       clientX: event.clientX,
       clientY: event.clientY
@@ -489,7 +598,7 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
       this.eventListenerSubscriptions.mousemove();
       delete this.eventListenerSubscriptions.mousemove;
     }
-    this.pointerUp.next({
+    this.pointerUp$.next({
       event,
       clientX: event.clientX,
       clientY: event.clientY
@@ -502,7 +611,7 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
         'document',
         'touchmove',
         (touchMoveEvent: TouchEvent) => {
-          this.pointerMove.next({
+          this.pointerMove$.next({
             event: touchMoveEvent,
             clientX: touchMoveEvent.targetTouches[0].clientX,
             clientY: touchMoveEvent.targetTouches[0].clientY
@@ -510,7 +619,7 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
         }
       );
     }
-    this.pointerDown.next({
+    this.pointerDown$.next({
       event,
       clientX: event.touches[0].clientX,
       clientY: event.touches[0].clientY
@@ -522,7 +631,7 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
       this.eventListenerSubscriptions.touchmove();
       delete this.eventListenerSubscriptions.touchmove;
     }
-    this.pointerUp.next({
+    this.pointerUp$.next({
       event,
       clientX: event.changedTouches[0].clientX,
       clientY: event.changedTouches[0].clientY
@@ -559,5 +668,19 @@ export class DraggableDirective implements OnInit, OnChanges, OnDestroy {
     Object.keys(styles).forEach(key => {
       this.renderer.setStyle(element, key, styles[key]);
     });
+  }
+
+  private getScrollPosition() {
+    if (this.scrollContainer) {
+      return {
+        top: this.scrollContainer.elementRef.nativeElement.scrollTop,
+        left: this.scrollContainer.elementRef.nativeElement.scrollLeft
+      };
+    } else {
+      return {
+        top: window.pageYOffset || document.documentElement.scrollTop,
+        left: window.pageXOffset || document.documentElement.scrollLeft
+      };
+    }
   }
 }
